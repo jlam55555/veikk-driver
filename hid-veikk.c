@@ -249,24 +249,43 @@ static int veikk_buttons_event(struct veikk_buttons_report_data *evt,
 //	input_report_key(input, KEY_LEFTSHIFT, !!any_keys_pressed);
 //	input_report_key(input, KEY_LEFTMETA, !!any_keys_pressed);
 
-	input_report_key(input, KEY_F1, buttons_state & 0x001);
-	input_report_key(input, KEY_F2, buttons_state & 0x002);
-	input_report_key(input, KEY_F3, buttons_state & 0x004);
-	input_report_key(input, KEY_F4, buttons_state & 0x008);
-	input_report_key(input, KEY_F5, buttons_state & 0x010);
-	input_report_key(input, KEY_F6, buttons_state & 0x020);
-	input_report_key(input, KEY_F7, buttons_state & 0x040);
-	input_report_key(input, KEY_F8, buttons_state & 0x080);
-	input_report_key(input, KEY_F9, buttons_state & 0x100);
-	input_report_key(input, KEY_F10, buttons_state & 0x200);
-	input_report_key(input, KEY_F11, buttons_state & 0x400);
-	input_report_key(input, KEY_F12, buttons_state & 0x800);
+//	input_report_key(input, KEY_F1, buttons_state & 0x001);
+//	input_report_key(input, KEY_F2, buttons_state & 0x002);
+//	input_report_key(input, KEY_F3, buttons_state & 0x004);
+//	input_report_key(input, KEY_F4, buttons_state & 0x008);
+//	input_report_key(input, KEY_F5, buttons_state & 0x010);
+//	input_report_key(input, KEY_F6, buttons_state & 0x020);
+//	input_report_key(input, KEY_F7, buttons_state & 0x040);
+//	input_report_key(input, KEY_F8, buttons_state & 0x080);
+//	input_report_key(input, KEY_F9, buttons_state & 0x100);
+//	input_report_key(input, KEY_F10, buttons_state & 0x200);
+//	input_report_key(input, KEY_F11, buttons_state & 0x400);
+//	input_report_key(input, KEY_F12, buttons_state & 0x800);
 
-	// TODO: make F13 the key for the wheel button; right now it is
-	// hardcoded as the thirteenth button for the A15 Pro (I believe)
-	input_report_key(input, KEY_F13, buttons_state & 0x1000);
-	input_report_key(input, KEY_F14, wheel_state & 0x1);
-	input_report_key(input, KEY_F15, wheel_state & 0x2);
+	input_report_key(input, BTN_0, buttons_state & 0x001);
+	input_report_key(input, BTN_1, buttons_state & 0x002);
+	input_report_key(input, BTN_2, buttons_state & 0x004);
+	input_report_key(input, BTN_3, buttons_state & 0x008);
+	input_report_key(input, BTN_4, buttons_state & 0x010);
+	input_report_key(input, BTN_5, buttons_state & 0x020);
+	input_report_key(input, BTN_6, buttons_state & 0x040);
+	input_report_key(input, BTN_7, buttons_state & 0x080);
+	input_report_key(input, BTN_8, buttons_state & 0x100);
+	input_report_key(input, BTN_9, buttons_state & 0x200);
+
+	// after BTN_9 are other buttons with assigned meanings, so we choose
+	// 0x118 and 0x119, which are unassigned in input-event-codes
+	input_report_key(input, 0x118, buttons_state & 0x400);
+	input_report_key(input, 0x119, buttons_state & 0x800);
+
+	// wheel and gear buttons
+	input_report_key(input, BTN_WHEEL, buttons_state & 0x1000);
+	input_report_key(input, BTN_GEAR_DOWN, wheel_state & 0x1);
+	input_report_key(input, BTN_GEAR_UP, wheel_state & 0x2);
+
+//	input_report_key(input, KEY_F13, buttons_state & 0x1000);
+//	input_report_key(input, KEY_F14, wheel_state & 0x1);
+//	input_report_key(input, KEY_F15, wheel_state & 0x2);
 	return 0;
 }
 
@@ -420,24 +439,41 @@ static int veikk_setup_buttons_input(struct input_dev *input,
 	__set_bit(MSC_SCAN, input->mscbit);
 
 	// buttons 1-12
-	__set_bit(KEY_F1, input->keybit);
-	__set_bit(KEY_F2, input->keybit);
-	__set_bit(KEY_F3, input->keybit);
-	__set_bit(KEY_F4, input->keybit);
-	__set_bit(KEY_F5, input->keybit);
-	__set_bit(KEY_F6, input->keybit);
-	__set_bit(KEY_F7, input->keybit);
-	__set_bit(KEY_F8, input->keybit);
-	__set_bit(KEY_F9, input->keybit);
-	__set_bit(KEY_F10, input->keybit);
-	__set_bit(KEY_F11, input->keybit);
-	__set_bit(KEY_F12, input->keybit);
+//	__set_bit(KEY_F1, input->keybit);
+//	__set_bit(KEY_F2, input->keybit);
+//	__set_bit(KEY_F3, input->keybit);
+//	__set_bit(KEY_F4, input->keybit);
+//	__set_bit(KEY_F5, input->keybit);
+//	__set_bit(KEY_F6, input->keybit);
+//	__set_bit(KEY_F7, input->keybit);
+//	__set_bit(KEY_F8, input->keybit);
+//	__set_bit(KEY_F9, input->keybit);
+//	__set_bit(KEY_F10, input->keybit);
+//	__set_bit(KEY_F11, input->keybit);
+//	__set_bit(KEY_F12, input->keybit);
+
+	__set_bit(BTN_0, input->keybit);
+	__set_bit(BTN_1, input->keybit);
+	__set_bit(BTN_2, input->keybit);
+	__set_bit(BTN_3, input->keybit);
+	__set_bit(BTN_4, input->keybit);
+	__set_bit(BTN_5, input->keybit);
+	__set_bit(BTN_6, input->keybit);
+	__set_bit(BTN_7, input->keybit);
+	__set_bit(BTN_8, input->keybit);
+	__set_bit(BTN_9, input->keybit);
+	__set_bit(0x118, input->keybit);
+	__set_bit(0x119, input->keybit);
 
 	// wheel center, left, right
 	// TODO: implement wheel center appropriately
-	__set_bit(KEY_F13, input->keybit);
-	__set_bit(KEY_F14, input->keybit);
-	__set_bit(KEY_F15, input->keybit);
+//	__set_bit(KEY_F13, input->keybit);
+//	__set_bit(KEY_F14, input->keybit);
+//	__set_bit(KEY_F15, input->keybit);
+
+	__set_bit(BTN_WHEEL, input->keybit);
+	__set_bit(BTN_GEAR_DOWN, input->keybit);
+	__set_bit(BTN_GEAR_UP, input->keybit);
 
 	// modifiers; sent out both by default and regular map
 //	__set_bit(KEY_LEFTCTRL, input->keybit);
