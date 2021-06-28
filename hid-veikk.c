@@ -1,11 +1,20 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Linux driver for VEIKK digitizers, 3.0.0a1
+ * hid-veikk.c -- Linux driver for VEIKK digitizers, 3.0.0a1
  *
- * Tested on:
- * Devices:		S640, A30, A50, A15, A15 Pro, VK1560
- * Linux kernels:	4.18+ (note: older kernels may have issues)
+ * This is intended to make Linux devices work with VEIKK digitizers
+ * (drawing tablets). There are two modes, which can be toggled by a
+ * sysfs parameter:
  *
- * Copyright (c) 2021 Jonathan Lam <jlam55555@gmail.com>
+ * - (Default): Requires accompanying Python veikk-config daemon. Allows
+ *   pen and button configuration. https://github.com/jlam55555/veikk-config.
+ * - Pen works OOTB, no button/gestures support. Similar to v2 driver
+ *   functionality.
+ *
+ * Note that the v3 driver is incompatible with the v2 driver and its
+ * configuration tool.
+ *
+ * Copyright (C) 2021  Jonathan Lam <jlam55555@gmail.com>
  */
 
 #include <linux/hid.h>
@@ -13,18 +22,19 @@
 #include <linux/workqueue.h>
 #include <asm/unaligned.h>
 
-// comment the following line to disable debugging output in kernel log (dmesg)
+// comment the following line to disable debugging output in kernel logs
 #define VEIKK_DEBUG_MODE
 
 #define VEIKK_VENDOR_ID		0x2FEB
-#define VEIKK_DRIVER_VERSION	"3.0.0"
+#define VEIKK_DRIVER_VERSION	"3.0.0a1"
 #define VEIKK_DRIVER_DESC	"VEIKK digitizer driver"
-#define VEIKK_DRIVER_AUTHOR	"Jonathan Lam <jonlamdev@gmail.com>"
+#define VEIKK_DRIVER_AUTHOR	"Jonathan Lam <jlam55555@gmail.com>"
 #define VEIKK_DRIVER_LICENSE	"GPL"
 
 #define VEIKK_PEN_REPORT	0x41
 #define VEIKK_BUTTON_REPORT	0x42
 #define VEIKK_PAD_REPORT	0x43
+
 struct veikk_report {
 	u8 id;		// proprietary report id always is 9
 	u8 type;	// see above macros for report types
@@ -50,24 +60,14 @@ struct veikk_pad_report_data {
 // veikk model characteristics
 struct veikk_model {
 	const char *name;
-	const int prod_id;
-	const int x_max, y_max, pressure_max;
-
-	// TODO: remove this
-	const int *pusage_keycode_map;
-
-	// .has_pad = whether model has a gesture pad, e.g., on A30, A50
-	// note that the wheels (e.g., on VK1560, A15 Pro) count as buttons
-	// and are not a gesture pad (they share the buttons report type)
-	const int has_buttons, has_pad;
+	const int prod_id, x_max, y_max, pressure_max, has_buttons, has_pad;
 };
 
 // veikk device descriptor
 struct veikk_device {
 	const struct veikk_model *model;
-	struct input_dev *pen_input, *buttons_input, *pad_input;
-	struct delayed_work setup_pen_work, setup_buttons_work,
-		setup_pad_work;
+	struct input_dev *input_dev;
+	struct delayed_work setup_pen_work, setup_buttons_work, setup_pad_work;
 	struct hid_device *hid_dev;
 
 	// bitmaps holding the latest state of buttons; this is necessary
@@ -80,7 +80,7 @@ struct veikk_device {
 // veikk_event and veikk_report are only used for debugging
 #ifdef VEIKK_DEBUG_MODE
 static int veikk_event(struct hid_device *hdev, struct hid_field *field,
-		       struct hid_usage *usage, __s32 value)
+	struct hid_usage *usage, __s32 value)
 {
 	hid_info(hdev, "in veikk_event: usage %x value %d", usage->hid, value);
 	return 0;
@@ -106,8 +106,8 @@ static int veikk_is_proprietary(struct hid_device *hid_dev)
 	u8 *rdesc = hid_dev->dev_rdesc;
 	unsigned int rsize = hid_dev->dev_rsize;
 
-	return rsize >= 3 && rdesc[0] == 0x06 && rdesc[1] == 0x0A
-	       && rdesc[2] == 0xFF;
+	return rsize >= 3
+		&& rdesc[0] == 0x06 && rdesc[1] == 0x0A && rdesc[2] == 0xFF;
 }
 
 /*
@@ -118,10 +118,9 @@ static int veikk_is_proprietary(struct hid_device *hid_dev)
  *
  * Device types: 0 = pen, 1 = buttons, 2 = gesture pad
  *
- * Note: return code of this is never used
- *
+ * TODO: return code of this is never used
  * TODO: make sure device exists, since this happens asynchronously. (E.g., if
- * user quickly plugs/unplugs device)
+ * 	user quickly plugs/unplugs device)
  */
 static const u8 pen_output_report[9] =
 	{ 0x09, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
@@ -140,23 +139,23 @@ static int veikk_setup_feature(struct work_struct *work, int device_type) {
 	dwork = container_of(work, struct delayed_work, work);
 
 	switch (device_type) {
-		case 0:
-			veikk_dev = container_of(dwork, struct veikk_device,
+	case 0:
+		veikk_dev = container_of(dwork, struct veikk_device,
 			setup_pen_work);
-			output_report = pen_output_report;
-			break;
-		case 1:
-			veikk_dev = container_of(dwork, struct veikk_device,
+		output_report = pen_output_report;
+		break;
+	case 1:
+		veikk_dev = container_of(dwork, struct veikk_device,
 			setup_buttons_work);
-			output_report = buttons_output_report;
-			break;
-		case 2:
-			veikk_dev = container_of(dwork, struct veikk_device,
+		output_report = buttons_output_report;
+		break;
+	case 2:
+		veikk_dev = container_of(dwork, struct veikk_device,
 			setup_pad_work);
-			output_report = pad_output_report;
-			break;
-		default:
-			return -EINVAL;
+		output_report = pad_output_report;
+		break;
+	default:
+		return -EINVAL;
 	}
 
 	hid_dev = veikk_dev->hid_dev;
@@ -182,15 +181,15 @@ static void veikk_setup_pad(struct work_struct *work)
 }
 
 static int veikk_pen_event(struct veikk_pen_report_data *evt,
-			   struct hid_device *hid_dev)
+	struct hid_device *hid_dev)
 {
 	struct veikk_device *veikk_dev = hid_get_drvdata(hid_dev);
-	struct input_dev *input = veikk_dev->pen_input;
+	struct input_dev *input = veikk_dev->input_dev;
 
 	input_report_abs(input, ABS_X, get_unaligned_le16(evt->x));
 	input_report_abs(input, ABS_Y, get_unaligned_le16(evt->y));
 	input_report_abs(input, ABS_PRESSURE,
-			 get_unaligned_le16(evt->pressure));
+		get_unaligned_le16(evt->pressure));
 
 	input_report_key(input, BTN_TOUCH, evt->btns & 0x01);
 	input_report_key(input, BTN_STYLUS, evt->btns & 0x02);
@@ -198,69 +197,27 @@ static int veikk_pen_event(struct veikk_pen_report_data *evt,
 	return 0;
 }
 
-/*
- * The last known state of all of the buttons 1-12 (wheel buttons) is stored
- * in the veikk_device::buttons_state (veikk_device::wheel_state). In this
- * function:
- *   1. The buttons_state (wheel_state) is updated
- *   2. If any buttons are down, mark the modifiers as pressed
- *   3. Mark all the pressed keys as pressed
- *
- * Note that this handles both the buttons and the wheel-left and wheel-right
- * events (but not the gesture pad events). These all are emitted from the
- * tablet with the same veikk_report::type of 0x1002. The buttons have a
- * veikk_buttons_report_data::type of 1, while the wheel events have a
- * veikk_buttons_report_data::type of 3, so it is easier to handle them
- * separately in this function and give them separate bitmaps.
- *
- * Note also that the modifiers are held down for the duration of the button
- * press, which means they will also modify other keys pressed at the same
- * time.
- *
- * TODO: how to address this note?
- */
+// TODO: fix this -- does this require state?
 static int veikk_buttons_event(struct veikk_buttons_report_data *evt,
-			       struct hid_device *hid_dev)
+	struct hid_device *hid_dev)
 {
 	struct veikk_device *veikk_dev = hid_get_drvdata(hid_dev);
-	struct input_dev *input = veikk_dev->buttons_input;
+	struct input_dev *input = veikk_dev->input_dev;
 	u16 event_buttons = get_unaligned_le16(evt->btns), buttons_state;
-	u8 wheel_state, any_keys_pressed;
+	u8 wheel_state;
 
 	// first byte: 1 = button, 3 = wheel left/right
 	if (evt->type == 1) {
 		buttons_state = evt->pressed
-				? (veikk_dev->buttons_state |= event_buttons)
-				: (veikk_dev->buttons_state &= ~event_buttons);
+			? (veikk_dev->buttons_state |= event_buttons)
+			: (veikk_dev->buttons_state &= ~event_buttons);
 		wheel_state = veikk_dev->wheel_state;
 	} else {
 		buttons_state = veikk_dev->buttons_state;
 		wheel_state = evt->pressed
-			      ? (veikk_dev->wheel_state |= event_buttons)
-			      : (veikk_dev->wheel_state &= ~event_buttons);
+			? (veikk_dev->wheel_state |= event_buttons)
+			: (veikk_dev->wheel_state &= ~event_buttons);
 	}
-	any_keys_pressed = !!(buttons_state | wheel_state);
-
-	// emit modifiers if any key pressed; want to send modifier events
-	// before the keycodes so that they don't dispatch the normal actions
-	// of the keycodes
-//	input_report_key(input, KEY_LEFTCTRL, !!any_keys_pressed);
-//	input_report_key(input, KEY_LEFTALT, !!any_keys_pressed);
-//	input_report_key(input, KEY_LEFTSHIFT, !!any_keys_pressed);
-//	input_report_key(input, KEY_LEFTMETA, !!any_keys_pressed);
-
-//	input_report_key(input, KEY_F1, buttons_state & 0x001);
-//	input_report_key(input, KEY_F2, buttons_state & 0x002);
-//	input_report_key(input, KEY_F3, buttons_state & 0x004);
-//	input_report_key(input, KEY_F4, buttons_state & 0x008);
-//	input_report_key(input, KEY_F5, buttons_state & 0x010);
-//	input_report_key(input, KEY_F6, buttons_state & 0x020);
-//	input_report_key(input, KEY_F7, buttons_state & 0x040);
-//	input_report_key(input, KEY_F8, buttons_state & 0x080);
-//	input_report_key(input, KEY_F9, buttons_state & 0x100);
-//	input_report_key(input, KEY_F10, buttons_state & 0x200);
-//	input_report_key(input, KEY_F11, buttons_state & 0x400);
-//	input_report_key(input, KEY_F12, buttons_state & 0x800);
 
 	input_report_key(input, BTN_0, buttons_state & 0x001);
 	input_report_key(input, BTN_1, buttons_state & 0x002);
@@ -282,42 +239,17 @@ static int veikk_buttons_event(struct veikk_buttons_report_data *evt,
 	input_report_key(input, BTN_WHEEL, buttons_state & 0x1000);
 	input_report_key(input, BTN_GEAR_DOWN, wheel_state & 0x1);
 	input_report_key(input, BTN_GEAR_UP, wheel_state & 0x2);
-
-//	input_report_key(input, KEY_F13, buttons_state & 0x1000);
-//	input_report_key(input, KEY_F14, wheel_state & 0x1);
-//	input_report_key(input, KEY_F15, wheel_state & 0x2);
 	return 0;
 }
 
-/*
- * see description of veikk_buttons_event; this performs the same logic but
- * for events emitted by the gesture pad
- */
 static int veikk_pad_event(struct veikk_pad_report_data *evt,
 			   struct hid_device *hid_dev)
 {
 	struct veikk_device *veikk_dev = hid_get_drvdata(hid_dev);
-	struct input_dev *input = veikk_dev->pad_input;
-	u8 state;
-
-	state = evt->pressed
+	struct input_dev *input = veikk_dev->input_dev;
+	u8 state = evt->pressed
 		? (veikk_dev->pad_state |= evt->btns)
 		: (veikk_dev->pad_state &= ~evt->btns);
-
-	// emit modifiers if any key pressed
-//	input_report_key(input, KEY_LEFTCTRL, !!state);
-//	input_report_key(input, KEY_LEFTALT, !!state);
-//	input_report_key(input, KEY_LEFTSHIFT, !!state);
-//	input_report_key(input, KEY_LEFTMETA, !!state);
-
-	// gesture pad swipe up, down, left, right (respectively)
-//	input_report_key(input, KEY_F21, state & 0x01);
-//	input_report_key(input, KEY_F22, state & 0x02);
-//	input_report_key(input, KEY_F23, state & 0x04);
-//	input_report_key(input, KEY_F24, state & 0x08);
-//
-//	// double-tap
-//	input_report_key(input, KEY_F20, state & 0x10);
 
 	// gesture pad swipe up, down, left, right (respectively)
 	input_report_key(input, BTN_NORTH, state & 0x01);
@@ -331,10 +263,10 @@ static int veikk_pad_event(struct veikk_pad_report_data *evt,
 }
 
 static int veikk_raw_event(struct hid_device *hid_dev,
-			   struct hid_report *report, u8 *data, int size)
+	struct hid_report *report, u8 *data, int size)
 {
 	struct veikk_device *veikk_dev = hid_get_drvdata(hid_dev);
-	struct input_dev *input;
+	struct input_dev *input = veikk_dev->input_dev;
 	struct veikk_report *veikk_report;
 
 #ifdef VEIKK_DEBUG_MODE
@@ -348,27 +280,24 @@ static int veikk_raw_event(struct hid_device *hid_dev,
 	veikk_report = (struct veikk_report *) data;
 
 	switch (veikk_report->type) {
-		case VEIKK_PEN_REPORT:
-			input = veikk_dev->pen_input;
-			if (veikk_pen_event((struct veikk_pen_report_data *)
-						    veikk_report->data, hid_dev))
-				return -EINVAL;
-			break;
-		case VEIKK_BUTTON_REPORT:
-			input = veikk_dev->buttons_input;
-			if (veikk_buttons_event((struct veikk_buttons_report_data *)
-							veikk_report->data, hid_dev))
-				return -EINVAL;
-			break;
-		case VEIKK_PAD_REPORT:
-			input = veikk_dev->pad_input;
-			if (veikk_pad_event((struct veikk_pad_report_data *)
-						    veikk_report->data, hid_dev))
-				return -EINVAL;
-			break;
-		default:
-			hid_info(hid_dev, "unknown report with id %d", report->id);
-			return 0;
+	case VEIKK_PEN_REPORT:
+		if (veikk_pen_event((struct veikk_pen_report_data *)
+				veikk_report->data, hid_dev))
+			return -EINVAL;
+		break;
+	case VEIKK_BUTTON_REPORT:
+		if (veikk_buttons_event((struct veikk_buttons_report_data *)
+				veikk_report->data, hid_dev))
+			return -EINVAL;
+		break;
+	case VEIKK_PAD_REPORT:
+		if (veikk_pad_event((struct veikk_pad_report_data *)
+				veikk_report->data, hid_dev))
+			return -EINVAL;
+		break;
+	default:
+		hid_info(hid_dev, "unknown report with id %d", report->id);
+		return 0;
 	}
 	input_sync(input);
 	return 1;
@@ -384,8 +313,9 @@ static void veikk_input_close(struct input_dev *dev)
 	hid_hw_close((struct hid_device *) input_get_drvdata(dev));
 }
 
+// used by second mode with pen passthrough only
 static int veikk_setup_pen_input(struct input_dev *input,
-				 struct hid_device *hid_dev)
+	struct hid_device *hid_dev)
 {
 	struct veikk_device *veikk_dev = hid_get_drvdata(hid_dev);
 	const struct veikk_model *model = veikk_dev->model;
@@ -393,7 +323,7 @@ static int veikk_setup_pen_input(struct input_dev *input,
 
 	// input name = model name + " Pen"
 	if (!(input_name = devm_kzalloc(&input->dev, strlen(model->name)+5,
-					GFP_KERNEL)))
+			GFP_KERNEL)))
 		return -ENOMEM;
 	sprintf(input_name, "%s Pen", model->name);
 	input->name = input_name;
@@ -408,7 +338,7 @@ static int veikk_setup_pen_input(struct input_dev *input,
 	__set_bit(BTN_STYLUS2, input->keybit);
 
 	// TODO: not sure what resolution, fuzz values should be;
-	// these ones seem to work fine for now
+	// 	these ones seem to work fine for now
 	input_set_abs_params(input, ABS_X, 0, model->x_max, 0, 0);
 	input_set_abs_params(input, ABS_Y, 0, model->y_max, 0, 0);
 	input_set_abs_params(input, ABS_PRESSURE, 0, model->pressure_max, 0, 0);
@@ -417,41 +347,39 @@ static int veikk_setup_pen_input(struct input_dev *input,
 	return 0;
 }
 
-static int veikk_setup_buttons_input(struct input_dev *input,
-				     struct hid_device *hid_dev)
+// used by default mode with all events in a single input_dev
+static int veikk_setup_bundled_inputs(struct input_dev *input,
+	struct hid_device *hid_dev)
 {
 	struct veikk_device *veikk_dev = hid_get_drvdata(hid_dev);
 	const struct veikk_model *model = veikk_dev->model;
 	char *input_name;
 
-	// input name = model name + " Keyboard"
-	if (!(input_name = devm_kzalloc(&input->dev, strlen(model->name)+10,
+	// input name = model name + " Bundled"
+	if (!(input_name = devm_kzalloc(&input->dev, strlen(model->name)+9,
 					GFP_KERNEL)))
 		return -ENOMEM;
-	sprintf(input_name, "%s Keyboard", model->name);
+	sprintf(input_name, "%s Bundled", model->name);
 	input->name = input_name;
 
-	__set_bit(INPUT_PROP_BUTTONPAD, input->propbit);
-
 	__set_bit(EV_KEY, input->evbit);
-	__set_bit(EV_MSC, input->evbit);
+	__set_bit(EV_ABS, input->evbit);
 	__set_bit(EV_REP, input->evbit);
 	__set_bit(MSC_SCAN, input->mscbit);
 
-	// buttons 1-12
-//	__set_bit(KEY_F1, input->keybit);
-//	__set_bit(KEY_F2, input->keybit);
-//	__set_bit(KEY_F3, input->keybit);
-//	__set_bit(KEY_F4, input->keybit);
-//	__set_bit(KEY_F5, input->keybit);
-//	__set_bit(KEY_F6, input->keybit);
-//	__set_bit(KEY_F7, input->keybit);
-//	__set_bit(KEY_F8, input->keybit);
-//	__set_bit(KEY_F9, input->keybit);
-//	__set_bit(KEY_F10, input->keybit);
-//	__set_bit(KEY_F11, input->keybit);
-//	__set_bit(KEY_F12, input->keybit);
+	// stylus capabilities
+	__set_bit(BTN_TOUCH, input->keybit);
+	__set_bit(BTN_STYLUS, input->keybit);
+	__set_bit(BTN_STYLUS2, input->keybit);
 
+	input_set_abs_params(input, ABS_X, 0, model->x_max, 0, 0);
+	input_set_abs_params(input, ABS_Y, 0, model->y_max, 0, 0);
+	input_set_abs_params(input, ABS_PRESSURE, 0, model->pressure_max, 0, 0);
+	input_abs_set_res(input, ABS_X, 100);
+	input_abs_set_res(input, ABS_Y, 100);
+
+	// buttonpad capabilities
+	// buttons 1-12
 	__set_bit(BTN_0, input->keybit);
 	__set_bit(BTN_1, input->keybit);
 	__set_bit(BTN_2, input->keybit);
@@ -466,68 +394,23 @@ static int veikk_setup_buttons_input(struct input_dev *input,
 	__set_bit(0x119, input->keybit);
 
 	// wheel center, left, right
-	// TODO: implement wheel center appropriately
-//	__set_bit(KEY_F13, input->keybit);
-//	__set_bit(KEY_F14, input->keybit);
-//	__set_bit(KEY_F15, input->keybit);
-
 	__set_bit(BTN_WHEEL, input->keybit);
 	__set_bit(BTN_GEAR_DOWN, input->keybit);
 	__set_bit(BTN_GEAR_UP, input->keybit);
 
-	// modifiers; sent out both by default and regular map
-//	__set_bit(KEY_LEFTCTRL, input->keybit);
-//	__set_bit(KEY_LEFTALT, input->keybit);
-//	__set_bit(KEY_LEFTSHIFT, input->keybit);
-//	__set_bit(KEY_LEFTMETA, input->keybit);
-
 	input_enable_softrepeat(input, 100, 33);
-	return 0;
-}
 
-static int veikk_setup_pad_input(struct input_dev *input,
-				 struct hid_device *hid_dev)
-{
-	struct veikk_device *veikk_dev = hid_get_drvdata(hid_dev);
-	const struct veikk_model *model = veikk_dev->model;
-	char *input_name;
-
-	// input name = model name + " Gesture Pad"
-	if (!(input_name = devm_kzalloc(&input->dev, strlen(model->name)+13,
-					GFP_KERNEL)))
-		return -ENOMEM;
-	sprintf(input_name, "%s Gesture Pad", model->name);
-	input->name = input_name;
-
-	__set_bit(EV_KEY, input->evbit);
-	__set_bit(EV_MSC, input->evbit);
-	__set_bit(EV_REP, input->evbit);
-	__set_bit(MSC_SCAN, input->mscbit);
-
-	// modifiers; sent out both by default and regular map
-//	__set_bit(KEY_LEFTCTRL, input->keybit);
-//	__set_bit(KEY_LEFTALT, input->keybit);
-//	__set_bit(KEY_LEFTSHIFT, input->keybit);
-//	__set_bit(KEY_LEFTMETA, input->keybit);
-
-	// two-finger-tap, up, down, left, right
-//	__set_bit(KEY_F20, input->keybit);
-//	__set_bit(KEY_F21, input->keybit);
-//	__set_bit(KEY_F22, input->keybit);
-//	__set_bit(KEY_F23, input->keybit);
-//	__set_bit(KEY_F24, input->keybit);
-
+	// gesture pad capabilities
 	__set_bit(BTN_TOOL_DOUBLETAP, input->keybit);
 	__set_bit(BTN_NORTH, input->keybit);
 	__set_bit(BTN_SOUTH, input->keybit);
 	__set_bit(BTN_WEST, input->keybit);
 	__set_bit(BTN_EAST, input->keybit);
-
 	return 0;
 }
 
 static int veikk_register_input(struct input_dev *input,
-				struct hid_device *hid_dev)
+	struct hid_device *hid_dev)
 {
 	input->open = veikk_input_open;
 	input->close = veikk_input_close;
@@ -550,13 +433,8 @@ static int veikk_allocate_setup_register_inputs(struct hid_device *hid_dev)
 	// allocate struct input_devs
 	// TODO: fill this out
 	//devres_open_group();
-	if (!(veikk_dev->pen_input = devm_input_allocate_device(&hid_dev->dev))
-	    || (veikk_dev->model->has_buttons
-		&& !(veikk_dev->buttons_input =
-			     devm_input_allocate_device(&hid_dev->dev)))
-	    || (veikk_dev->model->has_pad
-		&& !(veikk_dev->pad_input =
-			     devm_input_allocate_device(&hid_dev->dev)))) {
+	if (!(veikk_dev->input_dev
+			= devm_input_allocate_device(&hid_dev->dev))) {
 		err = -ENOMEM;
 		goto bad_alloc;
 	}
@@ -564,24 +442,18 @@ static int veikk_allocate_setup_register_inputs(struct hid_device *hid_dev)
 	//devres_close_group();
 
 	// setup struct input_devs
-	if ((err = veikk_setup_pen_input(veikk_dev->pen_input, hid_dev))
-	    || (veikk_dev->model->has_buttons
-		&& (err = veikk_setup_buttons_input(
-		veikk_dev->buttons_input, hid_dev)))
-	    || (veikk_dev->model->has_pad
-		&& (err = veikk_setup_pad_input(
-		veikk_dev->pad_input, hid_dev))))
+	// bundled (default) mode
+	if ((err = veikk_setup_bundled_inputs(veikk_dev->input_dev, hid_dev)))
 		goto bad_setup;
+
+	// pen-only mode
+	// TODO: properly switch on this
+//	if ((err = veikk_setup_pen_input(veikk_dev->pen_input, hid_dev))
+//		goto bad_setup;
 
 	// register struct input_devs
 	// TODO: refactor like the above
-	if ((err = veikk_register_input(veikk_dev->pen_input, hid_dev)))
-		goto bad_register;
-	if (veikk_dev->model->has_buttons && (err = veikk_register_input(
-		veikk_dev->buttons_input, hid_dev)))
-		goto bad_register;
-	if (veikk_dev->model->has_pad && (err = veikk_register_input(
-		veikk_dev->pad_input, hid_dev)))
+	if ((err = veikk_register_input(veikk_dev->input_dev, hid_dev)))
 		goto bad_register;
 
 	// setup workqueues to initialize proprietary devices correctly
@@ -600,20 +472,20 @@ static int veikk_allocate_setup_register_inputs(struct hid_device *hid_dev)
 	}
 	return 0;
 
-	bad_register:
+bad_register:
 	// input_unregister_device()
-	bad_setup:
+bad_setup:
 	// no special unwinding needed here
-	bad_alloc:
+bad_alloc:
 	// TODO: fill this out
 	//devres_release_group();
-	fail:
+fail:
 	return err;
 }
 
 // new device inserted
 static int veikk_probe(struct hid_device *hid_dev,
-		       const struct hid_device_id *id)
+	const struct hid_device_id *id)
 {
 	struct veikk_device *veikk_dev;
 	int err;
@@ -630,7 +502,7 @@ static int veikk_probe(struct hid_device *hid_dev,
 
 	// allocate, fill out veikk device descriptor
 	if (!(veikk_dev = devm_kzalloc(&hid_dev->dev,
-				       sizeof(struct veikk_device), GFP_KERNEL))) {
+			sizeof(struct veikk_device), GFP_KERNEL))) {
 		hid_err(hid_dev, "error allocating veikk device descriptor");
 		err = -ENOMEM;
 		goto fail;
@@ -651,7 +523,7 @@ static int veikk_probe(struct hid_device *hid_dev,
 	}
 
 	if ((err = hid_hw_start(hid_dev, HID_CONNECT_HIDRAW
-					 | HID_CONNECT_DRIVER))) {
+			| HID_CONNECT_DRIVER))) {
 		hid_err(hid_dev, "error signaling hardware start");
 		goto fail;
 	}
@@ -661,7 +533,7 @@ static int veikk_probe(struct hid_device *hid_dev,
 #endif	// VEIKK_DEBUG_MODE
 	return 0;
 
-	fail:
+fail:
 	return err;
 }
 
