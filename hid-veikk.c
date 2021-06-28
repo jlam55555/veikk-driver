@@ -6,24 +6,29 @@
  * (drawing tablets). There are two modes, which can be toggled by a
  * sysfs parameter:
  *
- * - (Default): Requires accompanying Python veikk-config daemon. Allows
- *   pen and button configuration. https://github.com/jlam55555/veikk-config.
- * - Pen works OOTB, no button/gestures support. Similar to v2 driver
- *   functionality.
+ * - Bundled (Default): Requires accompanying Python veikk-config tool.
+ *   Allows pen and button configuration.
+ * - Pen-only: Pen works out-of-the-box, no button/gestures support. Similar
+ *   to v2 driver functionality.
  *
- * Note that the v3 driver is incompatible with the v2 driver and its
+ * Note that this v3 driver is incompatible with the old v2 driver and its
  * configuration tool.
  *
+ * GitHub repository (v3):
+ * - veikk-driver (this):	https://github.com/jlam55555/veikk-driver
+ * - veikk-config: 		https://github.com/jlam55555/veikk-config
+ *
  * Copyright (C) 2021  Jonathan Lam <jlam55555@gmail.com>
+ *
+ * TODO: implement the pen-only mode and sysfs parameters
+ * TODO: general cleanup
+ * TODO: implement new devices
  */
 
 #include <linux/hid.h>
 #include <linux/module.h>
 #include <linux/workqueue.h>
 #include <asm/unaligned.h>
-
-// comment the following line to disable debugging output in kernel logs
-#define VEIKK_DEBUG_MODE
 
 #define VEIKK_VENDOR_ID		0x2FEB
 #define VEIKK_DRIVER_VERSION	"3.0.0a1"
@@ -78,7 +83,7 @@ struct veikk_device {
 };
 
 // veikk_event and veikk_report are only used for debugging
-#ifdef VEIKK_DEBUG_MODE
+#ifdef DEBUG
 static int veikk_event(struct hid_device *hdev, struct hid_field *field,
 	struct hid_usage *usage, __s32 value)
 {
@@ -89,7 +94,7 @@ void veikk_report(struct hid_device *hid_dev, struct hid_report *report)
 {
 	hid_info(hid_dev, "in veikk_report: report id %d", report->id);
 }
-#endif	// VEIKK_DEBUG_MODE
+#endif	// DEBUG
 
 /*
  * We only use the proprietary veikk interface (usage 0xFF0A), since this emits
@@ -269,9 +274,9 @@ static int veikk_raw_event(struct hid_device *hid_dev,
 	struct input_dev *input = veikk_dev->input_dev;
 	struct veikk_report *veikk_report;
 
-#ifdef VEIKK_DEBUG_MODE
+#ifdef DEBUG
 	hid_info(hid_dev, "raw report size: %d", size);
-#endif	// VEIKK_DEBUG_MODE
+#endif	// DEBUG
 
 	// only report ID for proprietary device has ID 9
 	if (report->id != 9 || size != sizeof(struct veikk_report))
@@ -528,9 +533,9 @@ static int veikk_probe(struct hid_device *hid_dev,
 		goto fail;
 	}
 
-#ifdef VEIKK_DEBUG_MODE
+#ifdef DEBUG
 	hid_info(hid_dev, "%s probed successfully.", veikk_dev->model->name);
-#endif	// VEIKK_DEBUG_MODE
+#endif	// DEBUG
 	return 0;
 
 fail:
@@ -550,9 +555,9 @@ static void veikk_remove(struct hid_device *hid_dev) {
 	if (veikk_dev)
 		hid_hw_stop(hid_dev);
 
-#ifdef VEIKK_DEBUG_MODE
+#ifdef DEBUG
 	hid_info(hid_dev, "device removed successfully.");
-#endif	// VEIKK_DEBUG_MODE
+#endif	// DEBUG
 }
 
 // List of VEIKK models
@@ -614,10 +619,10 @@ static struct hid_driver veikk_driver = {
 	 * the following are for debugging, .raw_event is the only one used
 	 * for real event reporting
 	 */
-#ifdef VEIKK_DEBUG_MODE
+#ifdef DEBUG
 	.report = veikk_report,
 	.event = veikk_event,
-#endif	// VEIKK_DEBUG_MODE
+#endif	// DEBUG
 };
 module_hid_driver(veikk_driver);
 

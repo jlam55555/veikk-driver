@@ -5,8 +5,11 @@ ifneq ($(KERNELRELEASE),)
 else
 	KDIR ?= /lib/modules/$(shell uname -r)/build
 
-all:
-	$(MAKE) -C $(KDIR) M=$(CURDIR) modules
+build:
+	$(MAKE) $(EXTRA_FLAGS) -C $(KDIR) M=$(CURDIR) modules
+
+debug: EXTRA_FLAGS+=EXTRA_CFLAGS=-DDEBUG
+debug: build
 
 install:
 	$(MAKE) -C $(KDIR) M=$(CURDIR) modules_install
